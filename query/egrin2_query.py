@@ -343,7 +343,7 @@ Types include: 'rows' (genes), 'columns' (conditions), 'gres'. Biclusters will b
                         db.motif_info.map_reduce(mapGREs,reduce,"gresCount_mapreduce")
 
                 gres = query.gre_id.tolist()
-                gres = filter(lambda x: x != "NaN", gres)
+                gres = list(filter(lambda x: x != "NaN", gres))
                 gres = pd.Series(gres).value_counts().to_frame("counts")
 
                 # find all bicluster counts

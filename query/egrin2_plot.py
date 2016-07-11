@@ -7,7 +7,7 @@ import itertools
 
 import plotly.plotly as py
 from plotly.graph_objs import *
-import colorbrewer as cb
+#import colorbrewer as cb  #Does not seem to be used & NA for python3 on OSX 7/8/16
 
 from assemble.resample import *
 from query.egrin2_query import *
@@ -106,7 +106,7 @@ def plotExpression(data, plot_type="boxplot", ipynb=False, zlim=None, sort=False
         to_plot = to_box(data, boxpoints)
         fig = to_plot
     else:
-        print "ERROR: Cannot recognize plot_type = %s" % plot_type
+        print("ERROR: Cannot recognize plot_type = %s" % plot_type)
         return None
 
     if not ipynb:
