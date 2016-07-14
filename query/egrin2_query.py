@@ -614,15 +614,22 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
     y_type_original = y_type
     y_type = TYPE_MAP[y_type]
 
+    import pdb; pdb.set_trace()
+    
     if logic in {"and","or","nor"}:
+    	
+        
         if logic == "and" and x_type == "corem_id":
-            q = {"$or": [{x_type: i} for i in x]}
+            cur_q = {"$or": [{x_type: i} for i in x]}
 
         else:
-            q = {"$" + logic: [{x_type: i} for i in x]}
+            cur_q = {"$" + logic: [{x_type: i} for i in x]}
+            #NOTE: This syntax is not valid in python3.  Will not pull 'x_type' for parent namespace
 
         o = {y_type: 1}
-        query = pd.DataFrame(list(db.corem.find(q, o)))
+        query = pd.DataFrame(list(db.corem.find(cur_q, o)))
+
+        #TO DO:  Add error handeling to see if '.corem' exists.  If not need to generate them
 
     else:
         logging.error("I don't recognize the logic you are trying to use. 'logic' must be 'and', 'or', or 'nor'.")

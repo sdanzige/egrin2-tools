@@ -216,6 +216,7 @@ def _import_genome(db, genome_file, ncbi_code):
 
 def _load_ratios(file_in):
     """Loads ratios from individual cMonkey runs (unfinished) or single flat file (gzip compressed)."""
+    
     if file_in == None:
         # compile from individual runs
         # do be done
@@ -223,10 +224,18 @@ def _load_ratios(file_in):
     else:
         logging.info("Loading gene expression file from '%s'", file_in)
         # load directly from gzip file
-        ratios = pd.read_csv(gzip.open(file_in, 'rb'), index_col=0, sep="\t")
+        
+        if file_in[-3:] == '.gz':
+        	fo = gzip.open(file_in, 'rb')
+        else:
+        	fo = open(file_in, 'r')
+        
+        #ratios = pd.read_csv(gzip.open(file_in, 'rb'), index_col=0, sep="\t")
+        ratios = pd.read_csv(fo, index_col=0, sep="\t")
 
         if ratios.shape[1] == 0:  # attempt using comma as a delimiter if tab failed
-             ratios = pd.read_csv(gzip.open(file_in, 'rb'), index_col=0, sep=",")
+             ratios = pd.read_csv(fo, index_col=0, sep=",")
+             #ratios = pd.read_csv(gzip.open(file_in, 'rb'), index_col=0, sep=",")
 
         if ratios.shape[1] == 0:
             # still wrong delimiter
@@ -235,11 +244,12 @@ def _load_ratios(file_in):
 
 def _standardize_ratios(ratios):
     """compute standardized ratios (global). row standardized"""
+    
     ratios_standardized = ratios.copy()
     zscore = lambda x: (x - x.mean()) / x.std()
 
     for row in ratios.iterrows():
-        ratios_standardized.loc[row[0]] = zscore(row[1])
+    	ratios_standardized.loc[row[0]] = zscore(row[1])
 
     return ratios_standardized
 
@@ -734,7 +744,7 @@ class ResultDatabase:
         self.db_files = _valid_cmonkey_results(self.db, self.db_files, self.db_run_override)
         self.run2id = _get_run2id(self.db, self.db_files)
 
-        _import_genome(self.db, self.genome_file, self.ncbi_code)
+	_import_genome(self.db, self.genome_file, self.ncbi_code)
         self.expression = _load_ratios(self.ratios_raw)
 
         logging.info("Standardizing gene expression...")
