@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """cm2sge.py
 This is a tool to prepare a directory for ensemble runs. Given an organism code
 and the ratios, matrix, split up the matrix into sub matrices and create
@@ -20,7 +20,7 @@ import itertools
 import logging
 import random
 
-#import cmonkey.datamatrix as dm
+import datamatrix as dm
 # need to be in python path!!!
 import cmconfig
 import ensemble
@@ -123,12 +123,12 @@ if __name__ == '__main__':
     if args.blocks is None:
         # if inclusion/exclusion blocks are not defined, simply choose at random
         logging.info("no inclusion/exclusion blocks defined, performing random sub matrix generation...")
-        dm.prepare_ensemble_matrix(args.ratios, args.targetdir, args.numfiles,
+        dm.prepare_ensemble_matrix(args.ratios, args.targetdir, args.numruns,
                                    args.mincols)
     else:
         ensemble.make_ensemble_ratios(args.ratios, args.blocks, args.exclusion, args.inclusion,
                                       args.numruns, args.targetdir)
-    
+
     cmconfig.make_config_files(args.num_cores, args.setenrich.split(','),
                                args.setenrich_files.split(","), args.numruns,
                                args.pipeline, args.targetdir)
