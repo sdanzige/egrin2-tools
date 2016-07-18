@@ -746,7 +746,7 @@ class ResultDatabase:
         self.db_files = _valid_cmonkey_results(self.db, self.db_files, self.db_run_override)
         self.run2id = _get_run2id(self.db, self.db_files)
 
-	_import_genome(self.db, self.genome_file, self.ncbi_code)
+        _import_genome(self.db, self.genome_file, self.ncbi_code)
         self.expression = _load_ratios(self.ratios_raw)
 
         logging.info("Standardizing gene expression...")
