@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
 Resample ratios. Add them to col_resample collection in an existing egrin2 MongoDB
@@ -18,9 +18,11 @@ import logging
 from pymongo import MongoClient
 import numpy as np
 import pandas as pd
-
 import sqlite3
 import json
+
+import util
+
 
 DESCRIPTION = """resample.py - prepare brute force random resamples"""
 
@@ -30,8 +32,9 @@ def rsd(vals):
 
 
 def resample(row_vals, n_rows):
-    """filter out nan values!!!!"""
-    return rsd(random.sample(row_vals.dropna(), n_rows))
+    """sample from non-NaN groups entries"""
+    return rsd(random.sample(row_vals.tolist(), n_rows))
+
 
 class MongoDB:
     def __init__(self, dbclient):
@@ -117,9 +120,9 @@ class SqliteDB:
 
 def __choose_n(dbclient, col, vals, n, add, n_rows, n_resamples, old_records, keepP):
     raw = vals.loc[:, "raw_expression"].copy()
-    raw.sort()
+    raw.sort_values()
     standardized = vals.loc[:, "standardized_expression"].copy()
-    standardized.sort()
+    standardized.sort_values()
 
     if add:
         d = {
@@ -181,18 +184,28 @@ def col_resample_ind(dbclient, n_rows, cols, n_resamples=1000, keepP=0.1):
         bins = __split_list(toAdd, nbins)
         logging.info("%d bins created", len(bins))
         for index, b in enumerate(bins):
-            logging.info("processing bin %d", index)
+            logging.info("processing bin %d (of %d)", index, nbins)
             df = dbclient.find_gene_expressions(b)
             if df.shape != (0,0):
-                df_gb = df.groupby("col_id")
+                df_gb = df.dropna().groupby("col_id")
                 logging.info('making rsd on col ids (n_rows = %d)...', n_rows)
-                df_rsd = pd.concat([df_gb.aggregate(resample, n_rows) for i in xrange(0, n_resamples)])
+                start_time = util.current_millis()
+                df_rsd = pd.concat([df_gb.aggregate(resample, n_rows) for i in range(0, n_resamples)])
+                elapsed = util.current_millis() - start_time
+                logging.info("concat aggregates in %d s.", (elapsed / 1000))
+                start_time = util.current_millis()
                 df_rsd_gb = df_rsd.groupby(df_rsd.index)
+                elapsed = util.current_millis() - start_time
+                logging.info("group by in %d s.", (elapsed / 1000))
 
                 logging.info("Adding new entries...")
+                start_time = util.current_millis()
                 for i in df_rsd_gb.groups.keys():
-                    __choose_n(dbclient, int(i), df_rsd_gb.get_group(i), n2keep, True, n_rows,
-                               n_resamples, old_records, keepP)
+                    __choose_n(dbclient, int(i), df_rsd_gb.get_group(i), n2keep,
+                               add=True, n_rows=n_rows,
+                               n_resamples=n_resamples, old_records=old_records, keepP=keepP)
+                elapsed = util.current_millis() - start_time
+                logging.info("added entries in %d s.", (elapsed / 1000))
             else:
                 print("no gene expressions found")
 
@@ -207,17 +220,18 @@ def col_resample_ind(dbclient, n_rows, cols, n_resamples=1000, keepP=0.1):
             df = dbclient.find_gene_expressions(self, column_nums)
 
             if df.shape != (0, 0):
-                df_gb = df.groupby("col_id")
+                df_gb = df.dropna().groupby("col_id")
                 resamples = n_resamples - np.min([i["resamples"] for i in old_records.values()])
 
                 if resamples > 0:
-                    df_rsd = pd.concat([df_gb.aggregate(resample, n_rows) for i in xrange(0, resamples)])
+                    df_rsd = pd.concat([df_gb.aggregate(resample, n_rows) for i in range(0, resamples)])
                     df_rsd_gb = df_rsd.groupby(df_rsd.index)
 
                     logging.info("Updating entries")
                     for i in df_rsd_gb.groups.keys():
-                        __choose_n(dbclient, int(i), df_rsd_gb.get_group(i), n2keep, False, n_rows,
-                                   resamples, old_records, keepP)
+                        __choose_n(dbclient, int(i), df_rsd_gb.get_group(i), n2keep,
+                                   add=False, n_rows=n_rows,
+                                   n_resamples=resamples, old_records=old_records, keepP=keepP)
     return None
 
 
@@ -227,10 +241,6 @@ LOG_FILE = None # "resample.log"
 
 
 if __name__ == '__main__':
-    import argparse
-    import os
-    import itertools
-
     logging.basicConfig(format=LOG_FORMAT, datefmt='%Y-%m-%d %H:%M:%S',
                         level=LOG_LEVEL, filename=LOG_FILE)
 

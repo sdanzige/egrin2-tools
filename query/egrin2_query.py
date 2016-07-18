@@ -10,122 +10,98 @@ from scipy.stats import hypergeom
 from statsmodels.sandbox.stats.multicomp import multipletests
 import itertools
 from bson.code import Code
-import matplotlib.pyplot as plt
-from scipy.cluster.hierarchy import linkage, dendrogram
-from scipy.spatial.distance import pdist, squareform
 from collections import defaultdict
-
-from assemble.resample import *
 
 
 def rsd(vals):
     return abs(np.std(vals) / np.mean(vals))
 
 
-def find_match(x, df, return_field):
-    """Find which 'df' element x matches. Return appropriate translation"""
-    # find matching row
-    counter = 0
-    while not (x in df.iloc[counter].tolist()):
-        counter += 1
-    return df.iloc[counter][return_field]
+def remove_list_duplicates(l):
+    added = set()
+    result = []
+    for elem in l:
+        if elem not in added:
+            result.append(elem)
+            added.add(elem)
+    return result
 
 
-def row2id(db, row, return_field="row_id"):
+def find_match(some_row_elem, df, column_name):
+    """finds the first row which contains some_row_elem, and returns the
+    value specified by the column name"""
+    for index, row in df.iterrows():
+        if some_row_elem in row.values:
+            return row[column_name]
+    return None
+
+
+def row2id_any(db, values, return_field="row_id"):
     """Check name format of rows. If necessary, translate."""
-    query = list(db.row_info.find({"$or": [{"row_id": row}, {"egrin2_row_name": row}, {"GI": row},
-                                           {"accession": row}, {"name": row}, {"sysName": row}]}))
-    if len(query) == 1:
-        if return_field == "all":
-            row = query[0]
-        else:
-            try:
-                row = query[0][return_field]
-            except Exception:
-                row = query[0]["row_id"]
-        return row
-
-    elif len(query) > 0:
-        logging.error("Multiple rows match the row name: %s", row)
-        logging.info(query)
-        return None
+    query = list(db.row_info.find({"$or": [{"row_id": {"$in": values}},
+                                           {"egrin2_row_name": {"$in": values}},
+                                           {"GI": {"$in": values}},
+                                           {"accession": {"$in": values}},
+                                           {"name": {"$in": values}},
+                                           {"sysName": {"$in": values}}]}))
+    if return_field == "all":
+        return query
     else:
-        logging.error("Cannot identify row name: %s", row)
-        return None
+        return remove_list_duplicates(list([q[return_field] for q in query]))
 
 
-def row2id_batch(db, rows, return_field="row_id", input_type=None):
+def row2id_with(db, values, input_field, return_field="row_id"):
+    """row2id function searching on a specific input field, which is potentially faster
+    than row2id_any()"""
+    entry_fields  = {"row_id", "egrin2_row_name", "GI", "accession", "name", "sysName"}
+    output_spec = {field: 1 for field in entry_fields}
+
+    if input_field in entry_fields:
+        q = {input_field: {"$in": values}}
+        query = pd.DataFrame(list(db.row_info.find(q, output_spec)))
+        query = query.set_index(input_field)
+        to_r = query.loc[values][return_field].tolist()
+        return remove_list_duplicates(to_r)
+    else:
+        raise Exception('row2id_with() called without input_type !!')
+
+
+def col2id_any(db, values, return_field="col_id"):
     """Check name format of rows. If necessary, translate."""
-    if return_field == input_type:
-        # returned its input previously, but just don't call this function !!
-        raise Exception('come on, that does not make any sense !')
-
-    query = pd.DataFrame(list(db.row_info.find({"$or": [{"row_id": {"$in": rows}},
-                                                        {"egrin2_row_name": {"$in": rows}},
-                                                        {"GI": {"$in": rows}},
-                                                        {"accession": {"$in": rows}},
-                                                        {"name": {"$in": rows}},
-                                                        {"sysName": {"$in": rows}}]},
-                                               {"row_id": 1,
-                                                "egrin2_row_name": 1,
-                                                "GI": 1, "accession": 1,
-                                                "name": 1})))
-
-    if input_type in ["row_id", "egrin2_row_name", "GI", "accession", "name", "sysName"]:
-        query = query.set_index(input_type)
-        to_r = query.loc[rows][return_field].tolist()
-    else:
-        # try to match input_type automatically
-        logging.info("Reverting to translation by single matches. Defining 'input_type' will dramatically speed up query.")
-        to_r = [row2id(db, x, return_field=return_field) for x in rows]
-
-    return to_r
+    query = list(db.col_info.find({"$or": [{"col_id": {"$in": values}},
+                                           { "egrin2_col_name": {"$in": values}}]}))
+    return [q[return_field] for q in query]
 
 
-def col2id(db, col, return_field="col_id"):
+def col2id_with(db, cols, input_field, return_field="col_id"):
     """Check name format of rows. If necessary, translate."""
-    query = list(db.col_info.find({"$or": [{"col_id": col},
-                                           { "egrin2_col_name": col}]}))
-    if len(query) == 1:
-        try:
-            col = query[0][return_field]
-        except Exception:
-            col = query[0]["col_id"]
-        return col
-
-    elif len(query) > 0:
-        logging.error("Multiple cols match the col name: %s", col)
-        logging.info(query)
-        return None
+    if input_field in ["col_id", "egrin2_col_name"]:
+        query = pd.DataFrame(list(db.col_info.find({ "$or": [{"col_id": {"$in": cols}},
+                                                             {"egrin2_col_name": {"$in": cols}}]},
+                                                   {"col_id": 1, "egrin2_col_name": 1})))
+        query = query.set_index(input_field)
+        return remove_list_duplicates(query.loc[cols][return_field].tolist())
     else:
-        logging.error("Cannot identify col name: %s", col)
-        return None
+        raise Exception('col2id_with() called without input type !!!')
 
 
-def col2id_batch(db, cols, return_field="col_id", input_type=None):
-    """Check name format of rows. If necessary, translate."""
-    if return_field == input_type:
-        # just here to remove previous calls, this only returned the
-        # cols argument, simply don't call that function !!!
-        raise Exception('come on, that does not make any sense !!!')
+# as a first step to clean up the code, move argument type decisions into
+# separate functions
+def is_row_type(argtype):
+    return argtype in {"rows", "row", "gene", "genes"}
 
-    query = pd.DataFrame(list(db.col_info.find({ "$or": [{"col_id": {"$in": cols}},
-                                                         {"egrin2_col_name": {"$in": cols}}]},
-                                               {"col_id": 1, "egrin2_col_name": 1})))
+def is_col_type(argtype):
+     return argtype in {"columns", "column", "col", "cols", "condition", "conditions", "conds"}
 
-    if input_type in ["col_id", "egrin2_col_name"]:
-        query = query.set_index(input_type)
-        to_r = query.loc[cols][return_field].tolist()
+def is_gre_type(argtype):
+     return argtype in {"motif", "gre", "motc", "motif.gre", "motfs", "gres", "motcs"}
 
-    else:
-        # try to match input_type automatically
-        logging.info("Reverting to translation by single matches. Defining 'input_type' will dramatically speed up query.")
-        to_r = [col2id(db, x, return_field=return_field) for x in cols]
-
-    return to_r
+def is_cluster_type(argtype):
+     return argtype in {"cluster", "clusters", "bicluster", "biclusters", "bcs"}
 
 
-def agglom(db, x=[0, 1], x_type=None, y_type=None, x_input_type=None, y_output_type=None,
+def agglom(db, x, x_type, y_type,
+           x_input_type=None, y_output_type=None,
            logic="or", gre_lim=10, pval_cutoff=0.05, translate=True):
     """
     Determine enrichment of y given x through bicluster co-membership.
@@ -159,28 +135,34 @@ Types include: 'rows' (genes), 'columns' (conditions), 'gres'. Biclusters will b
         x = [x]  # single
 
     # Check input types
-    if x_type == "rows" or x_type == "row" or x_type == "gene" or x_type == "genes":
+    if is_row_type(x_type):
         x_type = "rows"
         x_o = x
-        x = row2id_batch(db, x, input_type=x_input_type, return_field="row_id")
-        x = list(set(x))
+        if x_input_type is not None:
+            x = row2id_with(db, x, x_input_type, return_field="row_id")
+        else:
+            x = row2id_any(db, x, return_field="row_id")
+
         if len(x) == 0:
             logging.info("Cannot translate row names: %s", x_o)
             return None
 
-    elif x_type == "columns" or x_type == "column" or x_type == "col" or x_type == "cols" or x_type == "condition" or x_type == "conditions" or x_type == "conds":
+    elif is_col_type(x_type):
         x_type = "columns"
         x_o = x
-        x = col2id_batch(db, x, input_type=x_input_type, return_field="col_id")
-        x = list(set(x))
+        if x_input_type is not None:
+            x = col2id_with(db, x, x_input_type, return_field="col_id")
+        else:
+            x = col2id_any(db, x, return_field="col_id")
+
         if len(x) == 0:
             logging.info("Cannot translate col names: %s", x_o)
             return None
 
-    elif x_type == "motif" or x_type == "gre" or x_type == "motc" or x_type == "motif.gre" or x_type == "motifs" or x_type == "gres" or x_type == "motcs":
+    elif is_gre_type(x_type):
         x_type = "gre_id"
 
-    elif x_type == "cluster" or x_type == "clusters" or x_type == "bicluster" or x_type == "biclusters" or x_type == "bcs":
+    elif is_cluster_type(x_type):
         logging.warn("I hope you are using cluster '_id'!!! Otherwise the results might surprise you...")
         x_type = "_id"
 
@@ -189,13 +171,13 @@ Types include: 'rows' (genes), 'columns' (conditions), 'gres'. Biclusters will b
         return None
 
     # Check output types
-    if y_type == "rows" or y_type == "row" or y_type == "gene" or y_type == "genes":
+    if is_row_type(y_type):
         y_type = "rows"
-    elif y_type == "columns" or y_type == "column" or y_type == "col" or y_type == "cols" or y_type == "condition" or y_type == "conditions" or y_type == "conds":
+    elif is_col_type(y_type):
         y_type = "columns"
-    elif y_type == "motif" or y_type == "gre" or y_type == "motc" or y_type == "motif.gre" or y_type == "motfs" or y_type == "gres" or y_type == "motcs":
+    elif is_gre_type(y_type):
         y_type = "gre_id"
-    elif y_type == "cluster" or y_type == "clusters" or y_type == "bicluster" or y_type == "biclusters" or x_type == "bcs":
+    elif is_cluster_type(y_type):
         logging.warn("Will return bicluster _id. The results might surprise you...")
         y_type = "_id"
     else:
@@ -283,12 +265,12 @@ Types include: 'rows' (genes), 'columns' (conditions), 'gres'. Biclusters will b
                 all_counts = all_counts.set_index("_id")
 
                 # combine two data frames
-                to_r = rows.join(all_counts).sort("counts", ascending=False)
+                to_r = rows.join(all_counts).sort_values("counts", ascending=False)
                 to_r.columns = ["counts","all_counts"]
                 to_r = to_r.drop_duplicates()
 
                 if translate:
-                    to_r.index = row2id_batch(db, to_r.index.tolist(), return_field="egrin2_row_name", input_type="row_id")
+                    to_r.index = row2id_with(db, to_r.index.tolist(), "row_id", return_field="egrin2_row_name")
 
             if y_type == "columns":
 
@@ -321,11 +303,11 @@ Types include: 'rows' (genes), 'columns' (conditions), 'gres'. Biclusters will b
                 all_counts = all_counts.set_index("_id")
 
                 # combine two data frames
-                to_r = cols.join(all_counts).sort("counts", ascending=False)
+                to_r = cols.join(all_counts).sort_values("counts", ascending=False)
                 to_r.columns = ["counts","all_counts"]
 
                 if translate:
-                    to_r.index = col2id_batch(db, to_r.index.tolist(), return_field="egrin2_col_name", input_type="col_id")
+                    to_r.index = col2id_with(db, to_r.index.tolist(), "col_id", return_field="egrin2_col_name")
 
             if y_type == "gre_id":
 
@@ -351,7 +333,7 @@ Types include: 'rows' (genes), 'columns' (conditions), 'gres'. Biclusters will b
                 all_counts = all_counts.set_index("_id")
 
                 # combine two data frames
-                to_r = gres.join(all_counts).sort("counts",ascending=False)
+                to_r = gres.join(all_counts).sort_values("counts", ascending=False)
                 to_r.columns = ["counts","all_counts"]
 
                 # filter by GREs with more than 10 instances
@@ -360,7 +342,7 @@ Types include: 'rows' (genes), 'columns' (conditions), 'gres'. Biclusters will b
             to_r["pval"] = to_r.apply(compute_p, axis=1, M=db.bicluster_info.count(), N=query.shape[0])
             to_r["qval_BH"] = multipletests(to_r.pval, method='fdr_bh')[1]
             to_r["qval_bonferroni"] = multipletests(to_r.pval, method='bonferroni')[1]
-            to_r = to_r.sort(["pval","counts"], ascending=True)
+            to_r = to_r.sort_values(["pval","counts"], ascending=True)
 
             # only return below pval cutoff
             to_r = to_r.loc[to_r.pval <= pval_cutoff, :]
@@ -369,6 +351,7 @@ Types include: 'rows' (genes), 'columns' (conditions), 'gres'. Biclusters will b
     else:
         logging.info("Could not find any biclusters matching your criteria")
         return None
+
 
 def find_fimo(db, start=None, stop=None, locusId=None, strand=None, mot_pval_cutoff=None, filterby=None, filter_type=None,
               filterby_input_type=None, use_fimo_small=True,
@@ -411,7 +394,7 @@ def find_fimo(db, start=None, stop=None, locusId=None, strand=None, mot_pval_cut
         else:
             to_r = [count(x.iloc[i]) for i in range(x.shape[0])]
             to_r = list(itertools.chain(*to_r))
-            to_r.sort()
+            to_r.sort_values()
 
         return to_r
 
@@ -469,29 +452,29 @@ LocusIds in this database include:
 
     if filter_type is not None:
         logging.warn("Many of these filters are not supported currently. Only GREs!!!")
-        if filter_type == "rows" or filter_type == "row" or filter_type == "gene" or filter_type == "genes":
+        if is_row_type(filter_type):
             filter_type = "rows"
             filterby_o = filterby
-            filterby = row2id_batch(db, filterby, input_type=filter_input_type, return_field="row_id")
+            filterby = row2id_with(db, filterby, filter_input_type, return_field="row_id")
             filterby = list(set(filterby))
             if len(filterby) == 0:
                 logging.error("Cannot translate row names: %s", filterby_o)
                 return None
 
-        elif filter_type == "columns" or filter_type == "column" or filter_type == "col" or filter_type == "cols" or filter_type == "condition" or filter_type == "conditions" or filter_type == "conds":
+        elif is_col_type(filter_type):
             filter_type = "columns"
             filterby_o = filterby
-            filterby = col2id_batch(db, filterby, input_type=filterby_input_type, return_field="col_id")
+            filterby = col2id_with(db, filterby, filterby_input_type, return_field="col_id")
             filterby = list(set(filterby))
 
             if len(filterby) == 0:
                 logging.error("Cannot translate col names: %s", filterby_o)
                 return None
 
-        elif filter_type == "motif" or filter_type == "gre" or filter_type == "motc" or filter_type == "motif.gre" or filter_type == "motifs" or filter_type == "gres" or filter_type == "motcs":
+        elif is_gre_type(filter_type):
             filter_type = "gre_id"
 
-        elif filter_type == "cluster" or filter_type == "clusters" or filter_type == "bicluster" or filter_type == "biclusters" or filter_type == "bcs":
+        elif is_cluster_type(filter_type):
             logging.warn("I hope you are using cluster '_id'!!! Otherwise the results might surprise you...")
             filter_type = "_id"
 
@@ -550,6 +533,7 @@ LocusIds in this database include:
 
     return gre_scans
 
+
 def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes", y_return_field=None,
                     count=False, logic="or"):
 
@@ -584,14 +568,14 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
     x_type = TYPE_MAP[x_type]
     if x_type == "rows":
         x_o = x
-        x = row2id_batch(db, x, input_type = x_input_type, return_field="row_id")
+        x = row2id_with(db, x, x_input_type, return_field="row_id")
         x = list(set(x))
         if len(x) == 0:
             logging.error("Cannot translate row names: %s", x_o)
             return None
     elif x_type == "cols.col_id":
         x_o = x
-        x = col2id_batch(db, x, input_type = x_input_type, return_field="col_id")
+        x = col2id_with(db, x, x_input_type, return_field="col_id")
         x = list(set(x))
         if len(x) == 0:
             logging.error("Cannot translate row names: %s", x_o)
@@ -599,7 +583,7 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
     elif x_type == "edges":
         x_new = []
         for i in x:
-            i_trans = row2id_batch(db, i.split("-"), input_type=x_input_type, return_field="row_id")
+            i_trans = row2id_with(db, i.split("-"), x_input_type, return_field="row_id")
             i_trans = [str(j) for j in i_trans]
             x_new.append("-".join(i_trans))
             i_trans.reverse()
@@ -649,7 +633,7 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
                     to_r = to_r[to_r >= query.shape[0]]
 
                     if to_r.shape[0] > 0:
-                        to_r.index = row2id_batch(db, to_r.index.tolist(), return_field=y_return_field, input_type="row_id")
+                        to_r.index = row2id_with(db, to_r.index.tolist(), "row_id", return_field=y_return_field)
                     else:
                         logging.error("No genes found")
                         return None
@@ -657,8 +641,8 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
                     to_r = to_r[to_r >= query.shape[0]].index.tolist()
 
                     if len(to_r):
-                        to_r = row2id_batch(db, to_r, return_field=y_return_field, input_type="row_id")
-                        to_r.sort()
+                        to_r = row2id_with(db, to_r, "row_id", return_field=y_return_field)
+                        to_r.sort_values()
                     else:
                         logging.error("No genes found")
                         return None
@@ -667,20 +651,20 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
                     to_r = pd.Series(to_r).value_counts()
 
                     if to_r.shape[0] > 0:
-                        to_r.index = row2id_batch(db, to_r.index.tolist(), return_field=y_return_field, input_type="row_id")
+                        to_r.index = row2id_with(db, to_r.index.tolist(), "row_id", return_field=y_return_field)
                     else:
                         logging.error("No genes found")
                         return None
                 else:
                     to_r = list(set(to_r))
                     if len(to_r):
-                        to_r = row2id_batch(db, to_r, return_field=y_return_field, input_type = "row_id")
-                        to_r.sort()
+                        to_r = row2id_with(db, to_r, "row_id", return_field=y_return_field)
+                        to_r.sort_values()
                     else:
                         logging.error("No genes found")
                         return None
         else:
-            to_r = row2id_batch(db, query.rows[0], return_field=y_return_field, input_type="row_id")
+            to_r = row2id_with(db, query.rows[0], "row_id", return_field=y_return_field)
 
     elif y_type == "cols.col_id":
         if y_return_field is None:
@@ -695,7 +679,7 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
                 if count:
                     to_r = to_r[to_r >= query.shape[0]]
                     if to_r.shape[0] > 0:
-                        to_r.index = col2id_batch(db, to_r.index.tolist(), return_field=y_return_field, input_type="col_id")
+                        to_r.index = col2id_with(db, to_r.index.tolist(), "col_id", return_field=y_return_field)
                     else:
                         logging.error("No conditions found")
                         return None
@@ -703,8 +687,8 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
                     to_r = to_r[to_r >= query.shape[0]].index.tolist()
 
                     if len(to_r):
-                        to_r = col2id_batch(db, to_r, return_field=y_return_field, input_type="col_id")
-                        to_r.sort()
+                        to_r = col2id_with(db, to_r, 'col_id', return_field=y_return_field)
+                        to_r.sort_values()
                     else:
                         logging.error("No conditions found")
                         return None
@@ -712,24 +696,27 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
                 if count:
                     to_r = pd.Series(to_r).value_counts()
                     if to_r.shape[0] > 0:
-                        to_r.index = col2id_batch(db, to_r.index.tolist(), return_field=y_return_field, input_type="col_id")
+                        to_r.index = col2id_with(db, to_r.index.tolist(), 'col_id', return_field=y_return_field)
                     else:
                         logging.error("No conditions found")
                         return None
                 else:
                     to_r = list(set(to_r))
                     if len(to_r):
-                        to_r = col2id_batch(db, to_r, return_field=y_return_field, input_type="col_id")
-                        to_r.sort()
+                        to_r = col2id_with(db, to_r, 'col_id', return_field=y_return_field)
+                        to_r.sort_values()
                     else:
                         logging.error("No conditions found")
                         return None
         else:
             to_r = [int(i["col_id"]) for i in list(itertools.chain( *query.cols.values.tolist())) if i["col_id"] if type(i["col_id"]) is float]
-            to_r = col2id_batch(db, to_r, return_field=y_return_field, input_type="col_id")
+            to_r = col2id_with(db, to_r, 'col_id', return_field=y_return_field)
 
     elif y_type == "corem_id":
-        to_r = query.corem_id.tolist()
+        if query.shape[0] > 0:
+            to_r = query.corem_id.tolist()
+        else:
+            to_r = None
 
     elif y_type == "edges":
         if y_return_field is None:
@@ -738,13 +725,14 @@ def find_corem_info(db, x, x_type="corem_id", x_input_type=None, y_type="genes",
         to_r_new = []
 
         for i in to_r:
-            i_trans = row2id_batch(db, [int(j) for j in i.split("-")], input_type="row_id", return_field=y_return_field)
+            i_trans = row2id_with(db, [int(j) for j in i.split("-")], "row_id", return_field=y_return_field)
 
             i_trans = [str(j) for j in i_trans]
             to_r_new.append("-".join(i_trans))
         to_r = to_r_new
-        to_r.sort()
+        to_r.sort_values()
     elif y_type == "gre_id":
+        """TODO: GRE's for a corem"""
         logging.warn("GREs detection is not currently supported for corems. Please use the `agglom` function to find GREs enriched in biclusters containing corem genes instead.")
         to_r = None
     else:
@@ -764,8 +752,8 @@ def find_gene_expression(db, rows=None, cols=None, standardized=True):
 
     Parameters:
     -- db: mongo database object
-    -- rows: list of rows/genes in format recognized by row2id_batch (i.e. some name present in MicrobesOnline)
-    -- cols: list of columns/conditions in format recognized by col2id_batch (i.e. name in ratios matrix)
+    -- rows: list of rows/genes in format recognized by row2id_with() (i.e. some name present in MicrobesOnline)
+    -- cols: list of columns/conditions in format recognized by col2id_with (i.e. name in ratios matrix)
     -- standardized: fetch standardized data if True, otherwise raw (normalized) data
 
     """
@@ -789,9 +777,8 @@ def find_gene_expression(db, rows=None, cols=None, standardized=True):
         cols = [cols]  # single
 
     # translate rows/cols
-
-    rows = row2id_batch(db, rows, return_field="row_id", input_type=input_type_rows)
-    cols = col2id_batch(db, cols, return_field="col_id", input_type=input_type_cols)
+    rows = row2id_with(db, rows, input_type_rows, return_field="row_id")
+    cols = col2id_with(db, cols, input_type_cols, return_field="col_id")
 
     if len(rows) > 1000 or len(cols) > 1000:
         logging.warn("This is a large query. Please be patient. If you need faster access, I would suggest saving this matrix and loading directly from file.")
@@ -806,12 +793,13 @@ def find_gene_expression(db, rows=None, cols=None, standardized=True):
         else:
             data = query.pivot(index="row_id", columns="col_id", values="raw_expression")
 
-    data.index = row2id_batch(db, data.index.tolist(), return_field="egrin2_row_name", input_type="row_id")
-    data.columns = col2id_batch(db, data.columns.tolist(), return_field="egrin2_col_name", input_type="col_id")
+    data.index = row2id_with(db, data.index.tolist(), "row_id", return_field="egrin2_row_name")
+    data.columns = col2id_with(db, data.columns.tolist(), 'col_id', return_field="egrin2_col_name")
     data = data.sort_index()
     data = data.reindex_axis(sorted(data.columns), axis=1)
 
     return data
+
 
 def export_ggbweb(db, genes=None, outfile=None):
     """
@@ -819,7 +807,7 @@ def export_ggbweb(db, genes=None, outfile=None):
 
     Parameters:
     -- db: mongo database object
-    -- genes: list of genes in format recognized by row2id_batch (some name present in MicrobesOnline)
+    -- genes: list of genes in format recognized by row2id_with() (some name present in MicrobesOnline)
     -- outfile: path/name of module file to write
     """
     if genes is None:
@@ -832,7 +820,7 @@ def export_ggbweb(db, genes=None, outfile=None):
     def locFormat(x, gene):
         return pd.DataFrame([gene, "E.colik-12", str(x.start), str(x.stop)])
 
-    gene_info = pd.DataFrame(row2id_batch(db, genes, return_field="all"))
+    gene_info = pd.DataFrame(row2id_any(db, genes, return_field="all"))
 
     to_r = pd.concat([locFormat(gene_info.iloc[i], gene_info.loc[i, "egrin2_row_name"]) for i in range(gene_info.shape[0])], 2).T
 
@@ -931,7 +919,7 @@ def find_motifs(db, x, x_type, output_type=["data_frame", "array"][0]):
         # REORDER!!!
         query = query.loc[x, :]
 
-    elif x_type == "motif" or x_type == "gre" or x_type == "motc" or x_type == "motif.gre" or x_type == "motifs" or x_type == "gres" or x_type == "motcs":
+    elif is_gre_type(x_type):
         x_type = "gre_id"
         q = {x_type: {"$in": x}}
         o = {"_id": 0, "pwm": 1}
@@ -956,7 +944,7 @@ def gre_motifs(db, gre_id, evalue=None):
     """
     result = []
     query = {'gre_id': gre_id}
-    if evalue is not None: 
+    if evalue is not None:
         query['evalue'] = {'$lt': evalue}
 
     pwms = db.motif_info.find(query, {'pwm': 1, '_id': 0})
@@ -966,13 +954,14 @@ def gre_motifs(db, gre_id, evalue=None):
         result.append([[row['a'], row['g'], row['c'], row['t']] for row in rows])
     return result
 
+
 def gre_motifs_batch(db, gre_ids, evalue=None):
     """Returns a list of PSSMs for the given GRE id.
     If evalue is specified, only the motifs with a smaller evalue are returned
     """
     result = defaultdict(list)
     query = {'gre_id': {"$in": gre_ids}}
-    if evalue is not None: 
+    if evalue is not None:
         query['evalue'] = {'$lt': evalue}
 
     gre_pwms = db.motif_info.find(query, {'gre_id': 1, 'pwm': 1, '_id': 0})

@@ -1,4 +1,3 @@
-import argparse
 import os
 import sqlite3
 import logging
@@ -8,6 +7,7 @@ import requests
 from datetime import datetime
 import itertools
 import json
+import util
 
 """
 This assemble module is the sqlite3 based implementation
@@ -38,7 +38,7 @@ class SqliteDB:
             return row2id, id2row
         finally:
             cursor.close()
-    
+
     def get_column_maps(self):
         col2id = {}
         id2col = {}
@@ -121,7 +121,8 @@ class SqliteDB:
         try:
             cursor.execute('select corem_id, row_id from corem_rows')
             corem_rows = [(corem_id, row_id) for corem_id, row_id in cursor.fetchall()]
-            result = [{'_id': corem_id, 'corem_id': corem_id, 'rows': map(lambda x: x[1], row_ids)}
+            result = [{'_id': corem_id, 'corem_id': corem_id,
+                       'rows': list(map(lambda x: x[1], row_ids))}
                       for corem_id, row_ids in itertools.groupby(corem_rows, lambda x: x[0])]
             return result
         finally:
@@ -261,6 +262,7 @@ def create_tables(conn):
     conn.execute('create index if not exists cols_idx on columns (name)')
     conn.execute('create index if not exists col_annotations_idx on col_annotations (name)')
 
+def create_expr_indexes(conn):
     conn.execute('create index if not exists expr_values_idx on expr_values (row_id,col_id)')
 
 
@@ -270,8 +272,8 @@ def annotate_microbes_online(conn, row2id, ncbi_code):
     content = [line.split('\t') for line in resp.text.split('\n')]
     titles = content[0]
     sysname_col = titles.index('sysName')
-    print "sys name column at index: ", sysname_col
-    
+    print("sys name column at index: ", sysname_col)
+
     # insert the attributes
     attr2id = {}
     cursor = conn.cursor()
@@ -296,7 +298,7 @@ def annotate_microbes_online(conn, row2id, ncbi_code):
         conn.rollback()
         raise
     finally:
-        cursor.close()    
+        cursor.close()
 
 
 def db_insert_rows(conn, rows):
@@ -323,17 +325,25 @@ def store_ratios(conn, raw_ratios, std_ratios, row2id, col2id):
     """Store gene expressions"""
     logging.info("Storing gene expressions...")
     num_rows = 0
+
+    # speed up access by storing frequent references in variables
+    raw_ratios_colnames = raw_ratios.columns.values
+    raw_ratio_vals = raw_ratios.values
+    std_ratio_vals = std_ratios.values
+
     for rowidx, rowname in enumerate(raw_ratios.index.values):
         if num_rows % 200 == 0:
             logging.info("%.2f percent done (%d rows)",
                          round((float(num_rows) / raw_ratios.shape[0]) * 100, 1), num_rows)
         row_pk = row2id[rowname]
-        for colidx, colname in enumerate(raw_ratios.columns.values):
+        to_insert = []
+        for colidx, colname in enumerate(raw_ratios_colnames):
             col_pk = col2id[colname]
-            raw_value = raw_ratios.values[rowidx, colidx]
-            std_value = std_ratios.values[rowidx, colidx]
-            conn.execute('insert into expr_values (row_id,col_id,value,std_value) values (?,?,?,?)',
-                         [row_pk, col_pk, raw_value, std_value])
+            raw_value = raw_ratio_vals[rowidx, colidx]
+            std_value = std_ratio_vals[rowidx, colidx]
+            to_insert.append((row_pk, col_pk, raw_value, std_value))
+        conn.executemany('insert into expr_values (row_id,col_id,value,std_value) values (?,?,?,?)',
+                         to_insert)
         num_rows += 1
 
     conn.commit()
@@ -438,30 +448,32 @@ def store_motifs(conn, src_conn, cluster2id):
         cursor.close()
 
 
-def merge(args, result_dbs):
-    conn = sqlite3.connect(args.targetdb, 15, isolation_level='DEFERRED')
-    #conn = sqlite3.connect(args.targetdb)
-    try:
-        create_tables(conn)
-        cmonkey_dbs = filter(is_valid_db, result_dbs)
-        if len(cmonkey_dbs) > 0:
-            ncbi_code = extract_ncbi_code(cmonkey_dbs[0])
-            print "NCBI code: ", ncbi_code
-            raw_ratios, std_ratios = read_ratios(args.ratios)
-            row2id = db_insert_rows(conn, raw_ratios.index.values)
-            col2id = db_insert_cols(conn, raw_ratios.columns.values)
-            annotate_microbes_online(conn, row2id, ncbi_code)
-            store_ratios(conn, raw_ratios, std_ratios, row2id, col2id)
+def merge(dbclient, args, result_dbs):
+    conn = dbclient.conn
+    create_tables(conn)
+    cmonkey_dbs = list(filter(is_valid_db, result_dbs))
+    if len(cmonkey_dbs) > 0:
+        ncbi_code = extract_ncbi_code(cmonkey_dbs[0])
+        print("NCBI code: ", ncbi_code)
+        raw_ratios, std_ratios = read_ratios(args.ratios)
+        row2id = db_insert_rows(conn, raw_ratios.index.values)
+        col2id = db_insert_cols(conn, raw_ratios.columns.values)
+        annotate_microbes_online(conn, row2id, ncbi_code)
+        conn.commit()  # safe point
+        store_ratios(conn, raw_ratios, std_ratios, row2id, col2id)
+        conn.commit()  # safe point
+        create_expr_indexes(conn)
 
-            for cmonkey_db in cmonkey_dbs:
-                src_conn = sqlite3.connect(cmonkey_db)
-                try:
-                    run_id = store_run_info(conn, src_conn, row2id, col2id)
-                    cluster2id = store_biclusters(conn, src_conn, run_id, row2id, col2id)
-                    store_motifs(conn, src_conn, cluster2id)
-                finally:
-                    src_conn.close()
-        else:
-            raise Exception('no input databases provided !!!')
-    finally:
-        conn.close()
+        for cmonkey_db in cmonkey_dbs:
+            src_conn = sqlite3.connect(cmonkey_db)
+            try:
+                run_id = store_run_info(conn, src_conn, row2id, col2id)
+                cluster2id = store_biclusters(conn, src_conn, run_id, row2id, col2id)
+                start = util.current_millis()
+                store_motifs(conn, src_conn, cluster2id)
+                elapsed = util.current_millis() - start
+                logging.info('copied motifs in %d ms.', elapsed)
+            finally:
+                src_conn.close()
+    else:
+        raise Exception('no input databases provided !!!')

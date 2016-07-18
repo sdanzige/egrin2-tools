@@ -5,11 +5,8 @@ import numpy as np
 import pandas as pd
 import itertools
 
-import plotly.plotly as py
+import plotly.plotly as plotly
 from plotly.graph_objs import *
-#import colorbrewer as cb  #Does not seem to be used & NA for python3 on OSX 7/8/16
-
-from assemble.resample import *
 from query.egrin2_query import *
 
 
@@ -110,7 +107,7 @@ def plotExpression(data, plot_type="boxplot", ipynb=False, zlim=None, sort=False
         return None
 
     if not ipynb:
-        unique_url = py.plot(fig)
+        unique_url = plotly.plot(fig)
         return unique_url
 
     return fig

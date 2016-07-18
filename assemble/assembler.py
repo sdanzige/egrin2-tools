@@ -1,17 +1,21 @@
-#!/usr/bin/env python
-
+#!/usr/bin/env python3
 """Do all steps to assemble a cMonkey2 ensemble.
 
 Example:
 
-python assembler.py --organism eco --ratios /Users/abrooks/Desktop/Active/Eco_ensemble_python_m3d/ratios_eco_m3d.tsv.gz --targetdir /Users/abrooks/Desktop/Active/Eco_ensemble_python_m3d/ --ncbi_code 511145 --ensembledir /Users/abrooks/Desktop/Active/Eco_ensemble_python_m3d/eco-ens-m3d/ --col_annot /Users/abrooks/Desktop/Active/Eco_ensemble_python_m3d/E_coli_v4_Build_6.experiment_feature_descriptions.tsv.gz --n_resamples 0
+python3 assembler.py --organism eco --ratios /Users/abrooks/Desktop/Active/Eco_ensemble_python_m3d/ratios_eco_m3d.tsv.gz --targetdir /Users/abrooks/Desktop/Active/Eco_ensemble_python_m3d/ --ncbi_code 511145 --ensembledir /Users/abrooks/Desktop/Active/Eco_ensemble_python_m3d/eco-ens-m3d/ --col_annot /Users/abrooks/Desktop/Active/Eco_ensemble_python_m3d/E_coli_v4_Build_6.experiment_feature_descriptions.tsv.gz --n_resamples 0
 
-python assembler.py --organism eco --ratios ./ratios_eco_m3d.tsv.gz --targetdir ./ --ncbi_code 511145 --ensembledir ./eco-ens-m3d/ --col_annot ./E_coli_v4_Build_6.experiment_feature_descriptions.tsv.gz --n_resamples 0
+python3 assembler.py --organism eco --ratios ./ratios_eco_m3d.tsv.gz --targetdir ./ --ncbi_code 511145 --ensembledir ./eco-ens-m3d/ --col_annot ./E_coli_v4_Build_6.experiment_feature_descriptions.tsv.gz --n_resamples 0
 
-python assembler.py --organism mtu --ratios ./20141130.MTB.all.ratios.csv.gz --targetdir ./ --ncbi_code 83332 --ensembledir ./  --n_resamples 1000
+python3 assembler.py --organism mtu --ratios ./20141130.MTB.all.ratios.csv.gz --targetdir ./ --ncbi_code 83332 --ensembledir ./  --n_resamples 1000
+
+
+Using the SQLIte engine
+
+PYTHONPATH=. assemble/assembler.py --organism mtu --ratios mtb_files/20141130.MTB.all.ratios.csv --targetdir assemble-py3-test --dbengine sqlite --targetdb mtu-assemble-test.db ass1_input/mtu-out-001/cmonkey_run.db ass1_input/mtu-out-002/cmonkey_run.db ass1_input/mtu-out-004/cmonkey_run.db
 """
 import argparse
-import os, sys, stat, glob
+import os, glob
 import itertools
 import logging
 import datetime
@@ -121,13 +125,14 @@ def make_resample_scripts(args, dbname, targetdir, corem_sizes):
 This will dramatically speed up this step.""")
 
 
-def merge_sqlite(args):
+def merge_sqlite(args, dbclient):
     if len(args.result_dbs) == 0:
         prefix = '%s-out-' % args.organism if args.prefix is None else args.prefix
         result_dbs = sorted(glob.glob(os.path.join(args.ensembledir, "%s???/cmonkey_run.db" % prefix)))
     else:
+        print('args.result_dbs: ', args.result_dbs)
         result_dbs = args.result_dbs
-    asl.merge(args, result_dbs)
+    asl.merge(dbclient, args, result_dbs)
     return True
 
 
@@ -168,7 +173,7 @@ def merge_runs(args, dbclient, dbname):
     if args.dbengine == 'mongodb':
         return merge_mongodb(args, dbclient)
     elif args.dbengine == 'sqlite':
-        return merge_sqlite(args)
+        return merge_sqlite(args, dbclient)
     else:
         raise Exception('Unsupported database engine: %s' % args.dbengine)
 
@@ -195,7 +200,7 @@ def make_dbclient(args, dbname):
         db = client[dbname]
         return MongoDB(db)
     elif args.dbengine == 'sqlite':
-        conn = sqlite3.connect(dbname)
+        conn = sqlite3.connect(args.targetdb, 15, isolation_level='DEFERRED')
         return asl.SqliteDB(conn)
     else:
         raise Exception('unknown dbengine: %s' % args.dbengine)
@@ -216,12 +221,7 @@ def store_kb_workspace(conn):
                                          'workspace': target_ws})
 """
 
-
 if __name__ == '__main__':
-    import argparse
-    import os
-    import itertools
-
     logging.basicConfig(format=LOG_FORMAT, datefmt='%Y-%m-%d %H:%M:%S',
                         level=LOG_LEVEL, filename=LOG_FILE)
 
@@ -284,6 +284,9 @@ if __name__ == '__main__':
                                           cols=rs_dbclient.get_col_nums(),
                                           n_resamples=1000,
                                           keepP=0.1)
+            dbclient.conn.commit()  # commit everything so we can recover here
+
+            # do the finish step
             assemble_finish.finish_corems(dbclient)
             dbclient.conn.commit()
             #store_kb_workspace(dbclient.conn)
